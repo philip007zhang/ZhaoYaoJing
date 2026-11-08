@@ -1,0 +1,4 @@
+-r requirements.txt
+wxautox4==41.2.3; sys_platform == "win32"
+psutil>=7.0; sys_platform == "win32"
+pywin32>=310; sys_platform == "win32"
