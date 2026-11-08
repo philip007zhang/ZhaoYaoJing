@@ -75,7 +75,7 @@ def collect_history(wx, group, start, page_dir, batch=200, max_pages=100, timeou
     store = HistoryStore(page_dir / 'history.sqlite3')
     state = dict(boundary_reached=False, stop_reason='max_pages', pages=0,
                  strategy='fixed_batch_goback_false', goback_requested=False,
-                 possible_overlap=True)
+                 possible_overlap=True, unrecovered_timeout_pages=[])
     previous = None
     repeats = 0
     timeouts = 0
@@ -95,6 +95,11 @@ def collect_history(wx, group, start, page_dir, batch=200, max_pages=100, timeou
                     timeouts = 0
                 except TimeoutError:
                     timeouts += 1
+                    # goback=False may already have advanced the viewport.
+                    # The callback journal is recovery evidence, not a complete
+                    # returned package. Never certify a later export as complete
+                    # while a timed-out interval has not been reconstructed.
+                    state['unrecovered_timeout_pages'].append(page)
                     state.update(stop_reason='timeout_retry', consecutive_timeouts=timeouts)
                     (page_dir / 'state.json').write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding='utf-8')
                     print(f'第 {page} 包加载超时，保留回调日志，重试 {timeouts}/3', flush=True)
@@ -156,7 +161,11 @@ def collect_history(wx, group, start, page_dir, batch=200, max_pages=100, timeou
             print(f'历史包 {page}/{max_pages}：本次请求 {batch}，返回 {len(current)} 条，'
                   f'最早时间 {min(times).isoformat() if times else "未知"}', flush=True)
             if times and min(times) < start:
-                state.update(boundary_reached=True, stop_reason='crossed_start')
+                state['start_boundary_observed'] = True
+                if state['unrecovered_timeout_pages']:
+                    state.update(boundary_reached=False, stop_reason='crossed_start_with_unrecovered_timeout')
+                else:
+                    state.update(boundary_reached=True, stop_reason='crossed_start')
                 break
             if repeats >= 3:
                 state['stop_reason'] = 'no_progress_boundary_unverified'

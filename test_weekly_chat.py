@@ -128,8 +128,32 @@ class WeeklyTests(unittest.TestCase):
         fake = self.history([page, TimeoutError('loading'), older])
         with tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parent) as tmp:
             rows, state = collect_history(fake, TEST_GROUP, self.start, Path(tmp) / 'pages')
-            self.assertTrue(state['boundary_reached'])
+            self.assertFalse(state['boundary_reached'])
+            self.assertTrue(state['start_boundary_observed'])
+            self.assertEqual(state['unrecovered_timeout_pages'], [2])
+            self.assertEqual(state['stop_reason'], 'crossed_start_with_unrecovered_timeout')
             self.assertEqual(len(rows), 2)
+
+    def test_timeout_callback_gap_cannot_be_cached_as_complete(self):
+        old = self.row('2026-10-30T12:00:00+11:00')
+        lost = self.row('2026-11-02T12:00:00+11:00')
+        class Fake:
+            calls = 0
+            def ChatInfo(self):
+                return {'chat_name': TEST_GROUP, 'chat_type': 'group'}
+            def GetHistoryMessage(self, **kwargs):
+                self.calls += 1
+                if self.calls == 1:
+                    kwargs['callback'](SimpleNamespace(**lost))
+                    raise TimeoutError('advanced before timeout')
+                return [SimpleNamespace(**old)]
+        with tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parent) as tmp:
+            root = Path(tmp)
+            rows, state = collect_history(Fake(), TEST_GROUP, self.start, root / 'pages')
+            self.assertFalse(state['boundary_reached'])
+            self.assertTrue((root / 'pages/callback-0001.jsonl').stat().st_size)
+            write_outputs(root / 'run', rows, TEST_GROUP, self.start, self.end, 'test', state)
+            self.assertIsNone(find_cached_week([root], TEST_GROUP, self.start, self.end))
 
     def cache_fixture(self, root, name='complete', complete=True):
         folder = root / name
