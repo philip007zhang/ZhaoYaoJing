@@ -13,6 +13,9 @@ from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
+from console_output import configure_console
+
+configure_console()
 
 ROOT = Path(__file__).resolve().parent
 

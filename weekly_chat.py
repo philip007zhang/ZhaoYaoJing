@@ -11,6 +11,9 @@ from collections import Counter, defaultdict
 from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
+from console_output import configure_console
+
+configure_console()
 
 LOCAL_DEPS = Path(__file__).resolve().parent / '.deps'
 if LOCAL_DEPS.is_dir():
