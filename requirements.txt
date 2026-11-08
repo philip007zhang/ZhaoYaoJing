@@ -1,0 +1,3 @@
+# Windows may need the IANA timezone database.
+tzdata>=2025.2
+# Install the matching wxauto4 / wxautox4 version separately in the WeChat environment.
