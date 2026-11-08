@@ -1,2 +1,17 @@
-# ZhaoYaoJing
-照妖镜，a discussion analysis tool, helping you to understand the discussion and point out potential risk
+# 照妖镜
+
+照妖镜是一款轻量的讨论分析工具，帮助你快速了解对话脉络，并发现值得留意的潜在风险。
+
+## 使用
+
+直接在浏览器中打开 `index.html`，粘贴讨论内容后点击「分析讨论」。每行一条发言；可使用「姓名：内容」标注参与者。点击「试试示例」可查看演示。
+
+分析在浏览器本地执行，不会上传讨论内容。当前版本使用中英文关键词规则识别联系方式、人身攻击、威胁性表达和需要核实的强断言；摘要与主题线索也由文本规则整理。结果仅供参考，不能代替人工判断。
+
+## 测试
+
+需要 Node.js 18 或更高版本。运行：
+
+```sh
+node --test
+```
