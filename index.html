@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#f7f8f6">
+    <meta name="description" content="理解讨论脉络，发现需要关注的潜在风险。">
+    <title>照妖镜 · 讨论分析</title>
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="brand" href="#" aria-label="照妖镜首页">
+        <span class="brand-mark" aria-hidden="true">照</span>
+        <span>照妖镜</span>
+      </a>
+      <span class="topbar-note">讨论分析工具</span>
+    </header>
+
+    <main>
+      <section class="hero" aria-labelledby="page-title">
+        <div class="eyebrow"><span class="eyebrow-dot"></span> DISCUSSION INSIGHT</div>
+        <h1 id="page-title">看清讨论，<span>发现风险。</span></h1>
+        <p>梳理对话重点与参与者，标出值得留意的信号。分析在本地完成，不会上传内容。</p>
+      </section>
+
+      <div class="workspace">
+        <section class="input-panel panel" aria-labelledby="input-title">
+          <div class="panel-heading">
+            <div>
+              <span class="step-label">01 / 输入内容</span>
+              <h2 id="input-title">粘贴一段讨论</h2>
+            </div>
+            <button type="button" class="text-button" id="load-sample">试试示例 <span aria-hidden="true">↗</span></button>
+          </div>
+          <form id="discussion-form">
+            <label class="sr-only" for="discussion-input">讨论内容</label>
+            <textarea id="discussion-input" name="discussion" placeholder="每行一条发言，可用「姓名：内容」标注发言者…" required></textarea>
+            <div class="input-footer">
+              <span class="privacy-note"><span aria-hidden="true">◉</span> 内容仅在此页面本地分析</span>
+              <button type="submit" class="analyze-button">分析讨论 <span aria-hidden="true">→</span></button>
+            </div>
+          </form>
+          <div class="input-hint"><span class="hint-icon">i</span> 支持中文与英文；请勿粘贴你无权处理的敏感信息。</div>
+        </section>
+
+        <section class="result-panel panel" aria-label="分析结果">
+          <div id="empty-state" class="empty-state">
+            <div class="empty-illustration" aria-hidden="true">
+              <span class="lens-ring"></span>
+              <span class="lens-handle"></span>
+              <span class="lens-spark">✳</span>
+            </div>
+            <h2>等待一段讨论</h2>
+            <p>分析结果会呈现在这里，帮助你快速掌握对话重点与潜在风险。</p>
+            <div class="empty-tags"><span>讨论摘要</span><span>主题线索</span><span>风险提示</span></div>
+          </div>
+          <div id="results" class="results" aria-live="polite" hidden></div>
+        </section>
+      </div>
+      <p class="disclaimer">分析结果基于文本线索与简单规则生成，仅供参考；不代表对事实、意图或风险的最终判断。</p>
+    </main>
+    <footer><span>照妖镜 <span aria-hidden="true">·</span> 让讨论更清晰</span><span>轻一点判断，多一点核实。</span></footer>
+    <script src="analysis.js"></script>
+    <script src="app.js"></script>
+  </body>
+</html>
