@@ -5,8 +5,6 @@ import importlib
 import json
 import os
 import sys
-import hashlib
-import shutil
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -110,36 +108,17 @@ def collect_history(wx, group, start, page_dir, batch=200, max_pages=100, timeou
             if not isinstance(result, list):
                 raise RuntimeError('GetHistoryMessage 未返回消息列表')
             current = serialize_messages(result, group)
+            # Persist the returned package before any optional processing.
+            (page_dir / f'page-{page:04d}.json').write_text(
+                json.dumps(current, ensure_ascii=False, indent=2, default=str), encoding='utf-8')
             if download_media:
-                media_anchor = None
-                for message, row in zip(result, current):
-                    timestamp = parse_time(row.get('time'), start.tzinfo)
-                    if row.get('type') == 'time':
-                        media_anchor = timestamp
-                    effective = timestamp or media_anchor
-                    in_period = effective is not None and start <= effective < start + timedelta(days=7)
-                    if in_period and row.get('type') == 'video' and callable(getattr(message, 'download', None)):
-                        try:
-                            downloaded = message.download()
-                            if not isinstance(downloaded, (str, Path)):
-                                raise ValueError('download_did_not_return_path')
-                            source_path = Path(downloaded)
-                            if source_path.stat().st_size > 12 * 1024 * 1024:
-                                raise ValueError('video_exceeds_inline_limit')
-                            assets = page_dir.parent / 'media-assets'
-                            assets.mkdir(exist_ok=True)
-                            with source_path.open('rb') as source_stream:
-                                digest = hashlib.file_digest(source_stream, 'sha256').hexdigest()
-                            destination = assets / (digest + source_path.suffix.lower())
-                            if not destination.exists():
-                                shutil.copy2(source_path, destination)
-                            row['media_path'] = str(destination.resolve())
-                        except Exception as exc:
-                            row['media_download_status'] = type(exc).__name__
-                # Downloads may scroll a message into view. Restore the oldest
-                # returned item before requesting the next fixed-size package.
-                if result and callable(getattr(result[0], 'roll_into_view', None)):
-                    result[0].roll_into_view()
+                videos = 0
+                for row in current:
+                    if row.get('type') == 'video':
+                        row['media_download_status'] = 'deferred_unbounded_wechat_menu_download'
+                        videos += 1
+                if videos:
+                    print(f'本包含 {videos} 条视频：跳过可能无响应的微信菜单下载，保留消息并继续采集。', flush=True)
             (page_dir / f'page-{page:04d}.json').write_text(
                 json.dumps(current, ensure_ascii=False, indent=2, default=str), encoding='utf-8')
             state['pages'] = page

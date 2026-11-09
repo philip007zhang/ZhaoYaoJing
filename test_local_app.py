@@ -2,6 +2,7 @@ import http.client
 import json
 import tempfile
 import threading
+import time
 import unittest
 from http.server import ThreadingHTTPServer
 from pathlib import Path
@@ -46,6 +47,23 @@ class LocalAppTests(unittest.TestCase):
         self.app.state['status'] = 'running'
         with self.assertRaisesRegex(ValueError, '已有任务'):
             self.app.start({'prompt': '测试'})
+
+    def test_stalled_worker_reports_age(self):
+        self.app.state['status'] = 'running'
+        self.app.last_progress = time.monotonic() - 301
+        status = self.app.snapshot()
+        self.assertTrue(status['stalled'])
+        self.assertGreaterEqual(status['idle_seconds'], 300)
+
+    def test_stop_terminates_windows_process_tree(self):
+        from unittest.mock import MagicMock
+        process = MagicMock(pid=123456)
+        process.poll.return_value = None
+        self.app.process = process
+        with patch('local_app.os.name', 'nt'), patch('local_app.subprocess.run') as kill:
+            self.app.stop()
+            self.assertEqual(kill.call_args.args[0], ['taskkill', '/PID', '123456', '/T', '/F'])
+        self.app.process = None
 
     def test_report_catalog_does_not_return_chat_body(self):
         folder = self.app.data / 'run'

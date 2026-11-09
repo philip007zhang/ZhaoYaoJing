@@ -6,6 +6,7 @@ import secrets
 import subprocess
 import sys
 import threading
+import time
 import uuid
 import webbrowser
 from collections import deque
@@ -29,6 +30,14 @@ class App:
         self.process = None
         self.state = {'status': 'idle', 'logs': [], 'exit_code': None}
         self.logs = deque(maxlen=1500)
+        self.last_progress = None
+        self.started_at = None
+
+    def snapshot(self):
+        with self.lock:
+            idle = int(time.monotonic() - self.last_progress) if self.last_progress else 0
+            return dict(self.state, logs=list(self.logs), idle_seconds=idle,
+                        stalled=self.state['status'] == 'running' and idle >= 300)
 
     def inside(self, value):
         path = (self.data / value).resolve()
@@ -113,6 +122,7 @@ class App:
                                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                             text=True, encoding='utf-8', errors='replace', creationflags=creationflags)
             self.logs.clear()
+            self.started_at = self.last_progress = time.monotonic()
             self.state = {'status': 'running', 'exit_code': None}
             threading.Thread(target=self.consume, args=(self.process,), daemon=True).start()
 
@@ -120,6 +130,7 @@ class App:
         for line in process.stdout:
             with self.lock:
                 self.logs.append(line.rstrip())
+                self.last_progress = time.monotonic()
         code = process.wait()
         process.stdout.close()
         with self.lock:
@@ -128,9 +139,17 @@ class App:
 
     def stop(self):
         with self.lock:
-            if self.process and self.process.poll() is None:
-                self.state['status'] = 'stopping'
-                self.process.terminate()
+            process = self.process
+            if not process or process.poll() is not None:
+                return
+            self.state['status'] = 'stopping'
+        if os.name == 'nt':
+            # The venv launcher can own a second Python process. Killing only
+            # the launcher leaves UI automation alive and blocks new tasks.
+            subprocess.run(['taskkill', '/PID', str(process.pid), '/T', '/F'],
+                           capture_output=True, timeout=15, creationflags=subprocess.CREATE_NO_WINDOW)
+        else:
+            process.terminate()
 
 
 def handler_for(app):
@@ -169,8 +188,7 @@ def handler_for(app):
                     return self.send({'prompt': PROMPT, 'key_configured': bool(get_api_key()),
                                       'start': week(datetime.now(ZoneInfo('Australia/Sydney')))[0].date().isoformat()})
                 if parsed.path == '/api/status':
-                    with app.lock:
-                        return self.send(dict(app.state, logs=list(app.logs)))
+                    return self.send(app.snapshot())
                 if parsed.path == '/api/runs':
                     return self.send(app.runs())
                 if parsed.path == '/api/result':

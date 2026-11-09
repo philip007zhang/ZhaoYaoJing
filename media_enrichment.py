@@ -172,7 +172,7 @@ def enrich(folder, model, caller=None, fetcher=fetch):
                 except Exception as exc:
                     additions.append(dict(status='unread', source='local_video', reason=type(exc).__name__))
             elif row.get('type') == 'video':
-                additions.append(dict(status='unread', reason='video_not_downloaded'))
+                additions.append(dict(status='unread', reason=row.get('media_download_status') or 'video_not_downloaded'))
             elif row.get('type') == 'link' and not additions:
                 additions.append(dict(status='unread', reason='link_url_not_available'))
             row['media_enrichment'] = additions

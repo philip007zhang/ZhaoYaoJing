@@ -155,6 +155,25 @@ class WeeklyTests(unittest.TestCase):
             write_outputs(root / 'run', rows, TEST_GROUP, self.start, self.end, 'test', state)
             self.assertIsNone(find_cached_week([root], TEST_GROUP, self.start, self.end))
 
+    def test_media_flag_never_calls_unbounded_video_download(self):
+        class Video:
+            type = 'video'
+            attr = 'friend'
+            content = '[视频]'
+            sender = '示例成员'
+            def download(self):
+                raise AssertionError('unbounded UI download must not run')
+        class Fake:
+            def ChatInfo(self):
+                return {'chat_name': TEST_GROUP, 'chat_type': 'group'}
+            def GetHistoryMessage(self, **kwargs):
+                return [SimpleNamespace(type='time', time='2026-10-30T12:00:00+11:00'), Video()]
+        with tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parent) as tmp:
+            rows, state = collect_history(Fake(), TEST_GROUP, self.start, Path(tmp) / 'pages', download_media=True)
+            video = next(r for r in rows if r.get('type') == 'video')
+            self.assertEqual(video['media_download_status'], 'deferred_unbounded_wechat_menu_download')
+            self.assertTrue((Path(tmp) / 'pages/page-0001.json').is_file())
+
     def cache_fixture(self, root, name='complete', complete=True):
         folder = root / name
         write_outputs(folder, [self.row(self.start.isoformat())], TEST_GROUP,
