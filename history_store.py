@@ -47,6 +47,7 @@ def write_outputs(out, rows, group, start, end, source, history=None):
     members = defaultdict(lambda: dict(messages=0, characters=0, days=set()))
     media = Counter()
     earliest = latest = anchor = None
+    anchor_precision = 'minute'
     try:
         with (out / 'transcript.jsonl').open('w', encoding='utf-8') as transcript:
             for index, original in enumerate(rows, 1):
@@ -61,6 +62,7 @@ def write_outputs(out, rows, group, start, end, source, history=None):
                 timestamp = parse_time(row.get('time'), start.tzinfo)
                 if row.get('type') == 'time':
                     anchor = timestamp
+                    anchor_precision = row.get('time_precision', 'minute')
                     continue
                 if row.get('attr') not in ('friend', 'self'):
                     emit('excluded', dict(row, exclusion='system_or_unknown_origin'))
@@ -68,7 +70,8 @@ def write_outputs(out, rows, group, start, end, source, history=None):
                     continue
                 effective = timestamp or anchor
                 row.update(effective_time=effective.isoformat() if effective else None,
-                           time_basis='explicit' if timestamp else 'preceding_separator')
+                           time_basis='explicit' if timestamp else ('preceding_day_label' if anchor_precision == 'day' else 'preceding_separator'),
+                           time_precision='minute' if timestamp else anchor_precision)
                 if effective is None:
                     emit('uncertain', dict(row, exclusion='missing_timestamp'))
                     counts['uncertain'] += 1

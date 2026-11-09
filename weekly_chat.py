@@ -4,6 +4,7 @@ import csv
 import importlib
 import json
 import os
+import re
 import sys
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta
@@ -26,14 +27,70 @@ def week(now):
     return end - timedelta(days=7), end
 
 
-def parse_time(value, tz):
+def parse_time(value, tz, reference=None):
     if not value:
         return None
+    text = str(value).strip()
     try:
-        parsed = datetime.fromisoformat(str(value))
+        parsed = datetime.fromisoformat(text)
     except ValueError:
+        reference = reference or datetime.now(tz)
+        reference = reference.replace(tzinfo=tz) if reference.tzinfo is None else reference.astimezone(tz)
+        midnight = reference.replace(hour=0, minute=0, second=0, microsecond=0)
+        # WeChat renders recent days as 今天/昨天/星期六 instead of dates.
+        # Resolve once against the capture date, never against the target week.
+        match = re.fullmatch(r'(?:(今天|昨天|前天|(?:星期|周|礼拜)[一二三四五六日天])\s*)?(?:(上午|下午|晚上|中午|凌晨|早上)\s*)?(?:(\d{1,2}):(\d{2})(?::(\d{2}))?)?', text)
+        if match and any(match.groups()):
+            label, period, hour, minute, second = match.groups()
+            day = midnight
+            if label in ('昨天', '前天'):
+                day -= timedelta(days=1 if label == '昨天' else 2)
+            elif label and label not in ('今天',):
+                weekday = '一二三四五六日'.index(label[-1].replace('天', '日'))
+                day -= timedelta(days=(midnight.weekday() - weekday) % 7)
+            h = int(hour or 0)
+            if period in ('下午', '晚上') and h < 12:
+                h += 12
+            elif period == '中午' and 1 <= h < 11:
+                h += 12
+            elif period in ('上午', '凌晨', '早上') and h == 12:
+                h = 0
+            try:
+                return day.replace(hour=h, minute=int(minute or 0), second=int(second or 0))
+            except ValueError:
+                return None
+        date_match = re.fullmatch(r'(?:(\d{4})[年/-])?(\d{1,2})[月/-](\d{1,2})日?(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?)?', text)
+        if date_match:
+            year, month, day, hour, minute, second = date_match.groups()
+            try:
+                resolved = datetime(int(year or reference.year), int(month), int(day), int(hour or 0), int(minute or 0), int(second or 0), tzinfo=tz)
+                if not year and resolved.date() > reference.date():
+                    resolved = resolved.replace(year=resolved.year - 1)
+                return resolved
+            except ValueError:
+                return None
         return None
     return parsed.replace(tzinfo=tz) if parsed.tzinfo is None else parsed.astimezone(tz)
+
+
+def normalize_time_rows(rows, tz, reference):
+    for row in rows:
+        if row.get('type') != 'time':
+            continue
+        label = str(row.get('time_label') or row.get('content') or '').strip()
+        # Prefer a visible relative label over an implicit library conversion.
+        relative = bool(re.match(r'^(?:今天|昨天|前天|星期|周[一二三四五六日天]|礼拜)', label))
+        value = label if relative else row.get('time') or label
+        parsed = parse_time(value, tz, reference)
+        if parsed is None and value != label:
+            parsed = parse_time(label, tz, reference)
+        if parsed:
+            row['time_original'] = row.get('time')
+            row['time_label'] = label or str(value)
+            row['time_reference'] = reference.isoformat()
+            row['time_precision'] = 'minute' if re.search(r'\d{1,2}:\d{2}', str(value)) else 'day'
+            row['time'] = parsed.isoformat()
+    return rows
 
 
 def serialize_messages(messages, group):
@@ -42,7 +99,14 @@ def serialize_messages(messages, group):
         row = {}
         for key in ('type', 'attr', 'sender', 'content', 'time', 'id',
                     'quote_content', 'quote_nickname', 'info', 'url', 'link'):
-            value = getattr(msg, key, None)
+            try:
+                value = getattr(msg, key, None)
+            except (ValueError, TypeError):
+                # Some client/library combinations cannot parse weekday labels.
+                # Keep the visible time-message content for our own resolver.
+                if key != 'time':
+                    raise
+                value = None
             if value is not None and not callable(value):
                 row[key] = value
         row['group'] = group
@@ -67,13 +131,14 @@ def chronological(rows, tz):
     return [row for block in sorted(blocks, key=key) for row in block]
 
 
-def collect_history(wx, group, start, page_dir, batch=200, max_pages=100, timeout=60, download_media=False):
+def collect_history(wx, group, start, page_dir, batch=200, max_pages=100, timeout=60, download_media=False, reference=None):
     from history_store import HistoryStore
     page_dir.mkdir(parents=True, exist_ok=False)
     store = HistoryStore(page_dir / 'history.sqlite3')
+    reference = reference or datetime.now(start.tzinfo)
     state = dict(boundary_reached=False, stop_reason='max_pages', pages=0,
                  strategy='fixed_batch_goback_false', goback_requested=False,
-                 possible_overlap=True, unrecovered_timeout_pages=[])
+                 possible_overlap=True, unrecovered_timeout_pages=[], time_reference=reference.isoformat())
     previous = None
     repeats = 0
     timeouts = 0
@@ -84,7 +149,7 @@ def collect_history(wx, group, start, page_dir, batch=200, max_pages=100, timeou
                 raise RuntimeError('采集期间聊天目标发生变化，停止读取。')
             with (page_dir / f'callback-{page:04d}.jsonl').open('w', encoding='utf-8') as journal:
                 def checkpoint(message):
-                    journal.write(json.dumps(serialize_messages([message], group)[0],
+                    journal.write(json.dumps(normalize_time_rows(serialize_messages([message], group), start.tzinfo, reference)[0],
                                              ensure_ascii=False, default=str) + '\n')
                     journal.flush()
                 try:
@@ -107,7 +172,7 @@ def collect_history(wx, group, start, page_dir, batch=200, max_pages=100, timeou
                     continue
             if not isinstance(result, list):
                 raise RuntimeError('GetHistoryMessage 未返回消息列表')
-            current = serialize_messages(result, group)
+            current = normalize_time_rows(serialize_messages(result, group), start.tzinfo, reference)
             # Persist the returned package before any optional processing.
             (page_dir / f'page-{page:04d}.json').write_text(
                 json.dumps(current, ensure_ascii=False, indent=2, default=str), encoding='utf-8')
@@ -139,12 +204,16 @@ def collect_history(wx, group, start, page_dir, batch=200, max_pages=100, timeou
             times = [t for t in times if t is not None]
             print(f'历史包 {page}/{max_pages}：本次请求 {batch}，返回 {len(current)} 条，'
                   f'最早时间 {min(times).isoformat() if times else "未知"}', flush=True)
-            if times and min(times) < start:
+            if times and min(times) <= start:
                 state['start_boundary_observed'] = True
+                state['start_boundary_precision'] = 'day' if any(
+                    r.get('time_precision') == 'day' and parse_time(r.get('time'), start.tzinfo) == start
+                    for r in current) else 'minute'
                 if state['unrecovered_timeout_pages']:
                     state.update(boundary_reached=False, stop_reason='crossed_start_with_unrecovered_timeout')
                 else:
-                    state.update(boundary_reached=True, stop_reason='crossed_start')
+                    state.update(boundary_reached=True, stop_reason='crossed_start' if min(times) < start else 'reached_start')
+                print(f'已到达起始日期 {start.date().isoformat()}，停止向前回溯。', flush=True)
                 break
             if repeats >= 3:
                 state['stop_reason'] = 'no_progress_boundary_unverified'

@@ -3,12 +3,62 @@ import tempfile
 import unittest
 from datetime import datetime
 from pathlib import Path
-from weekly_chat import TEST_GROUP, analyze, week, write_outputs, ZoneInfo, collect_history, chronological, find_cached_week
+from weekly_chat import TEST_GROUP, analyze, week, write_outputs, ZoneInfo, collect_history, chronological, find_cached_week, parse_time, normalize_time_rows
 from types import SimpleNamespace
 from unittest.mock import patch
 
 
 class WeeklyTests(unittest.TestCase):
+    def test_weekday_labels_resolve_against_capture_day(self):
+        tz = ZoneInfo('Australia/Sydney')
+        reference = datetime(2026, 11, 10, 19, tzinfo=tz)
+        self.assertEqual(parse_time('星期六', tz, reference), datetime(2026, 11, 7, tzinfo=tz))
+        self.assertEqual(parse_time('周六 下午 3:15', tz, reference), datetime(2026, 11, 7, 15, 15, tzinfo=tz))
+        self.assertEqual(parse_time('昨天 08:30', tz, reference), datetime(2026, 11, 9, 8, 30, tzinfo=tz))
+        self.assertEqual(parse_time('前天', tz, reference).day, 8)
+        self.assertEqual(parse_time('11月7日 18:00', tz, reference).day, 7)
+        self.assertIsNone(parse_time('星期六 29:99', tz, reference))
+
+    def test_year_boundary_and_sunday_alias(self):
+        tz = ZoneInfo('Australia/Sydney')
+        reference = datetime(2027, 1, 2, 12, tzinfo=tz)
+        self.assertEqual(parse_time('12月31日', tz, reference).year, 2026)
+        self.assertEqual(parse_time('星期天', tz, reference).date().isoformat(), '2026-12-27')
+
+    def test_visible_weekday_overrides_library_date_and_preserves_label(self):
+        tz = ZoneInfo('Australia/Sydney')
+        reference = datetime(2026, 11, 10, 19, tzinfo=tz)
+        rows = normalize_time_rows([dict(type='time', content='星期六', time='2026-10-31 00:00:00')], tz, reference)
+        self.assertEqual(rows[0]['time'][:10], '2026-11-07')
+        self.assertEqual(rows[0]['time_label'], '星期六')
+        self.assertEqual(rows[0]['time_precision'], 'day')
+        self.assertEqual(rows[0]['time_original'], '2026-10-31 00:00:00')
+
+    def test_stop_at_target_saturday_without_previous_week(self):
+        tz = ZoneInfo('Australia/Sydney')
+        start = datetime(2026, 11, 7, tzinfo=tz)
+        fake = self.history([[dict(type='time', content='星期六'),
+                              dict(type='text', attr='friend', sender='示例', content='本周记录')]])
+        with tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parent) as tmp:
+            rows, state = collect_history(fake, TEST_GROUP, start, Path(tmp) / 'pages',
+                                          reference=datetime(2026, 11, 10, 19, tzinfo=tz))
+            self.assertEqual(len(fake.calls), 1)
+            self.assertTrue(state['boundary_reached'])
+            self.assertEqual(state['stop_reason'], 'reached_start')
+            self.assertEqual(state['start_boundary_precision'], 'day')
+            included, _, _, _ = analyze(rows, TEST_GROUP, start, start.replace(day=14))
+            self.assertEqual(len(included), 1)
+
+    def test_timed_saturday_keeps_reading_to_day_start(self):
+        tz = ZoneInfo('Australia/Sydney')
+        start = datetime(2026, 11, 7, tzinfo=tz)
+        fake = self.history([[dict(type='time', content='星期六 14:30')],
+                             [dict(type='time', content='星期五 23:30')]])
+        with tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parent) as tmp:
+            _, state = collect_history(fake, TEST_GROUP, start, Path(tmp) / 'pages',
+                                       reference=datetime(2026, 11, 10, 19, tzinfo=tz))
+            self.assertEqual(len(fake.calls), 2)
+            self.assertTrue(state['boundary_reached'])
     def setUp(self):
         self.tz = ZoneInfo('Australia/Sydney')
         self.start, self.end = week(datetime(2026, 11, 7, 12, tzinfo=self.tz))
