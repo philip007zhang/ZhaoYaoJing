@@ -70,8 +70,8 @@ def write_outputs(out, rows, group, start, end, source, history=None):
                     continue
                 effective = timestamp or anchor
                 row.update(effective_time=effective.isoformat() if effective else None,
-                           time_basis='explicit' if timestamp else ('preceding_day_label' if anchor_precision == 'day' else 'preceding_separator'),
-                           time_precision='minute' if timestamp else anchor_precision)
+                           time_basis=row.get('source_time_basis') or ('explicit' if timestamp else ('preceding_day_label' if anchor_precision == 'day' else 'preceding_separator')),
+                           time_precision=row.get('time_precision', 'minute') if timestamp else anchor_precision)
                 if effective is None:
                     emit('uncertain', dict(row, exclusion='missing_timestamp'))
                     counts['uncertain'] += 1

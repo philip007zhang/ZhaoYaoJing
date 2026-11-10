@@ -82,9 +82,9 @@ def reader_text(paragraphs):
     return cleaned
 
 
-CONDENSE_PROMPT = '''你是中文周报编辑。将提供的报告精简到600至900字，不能超过1100字，不增加新事实。
+CONDENSE_PROMPT = '''你是中文讨论报告编辑。将提供的报告精简到600至900字，不能超过1100字，不增加新事实。
 保留日期、最重要的3至5个议题、最多3人的关键贡献及真正待解决的问题，删掉次要细节。
-用【本周看点】【关键贡献】【共识与分歧】【待解决问题】小标题和短列表，缺少内容的章节省略。
+用【讨论重点】【关键贡献】【共识与分歧】【待解决问题】小标题和短列表，缺少内容的章节省略。
 每条约30至50字，直接说要点；不要堆人名、发言量、举例或原文。
 财税、法律、投资等内容表述为群内讨论或观点，不将群友意见写成已验证的政策或事实。
 从头到尾不显示消息编号、Message ID或引用括号。只返回JSON：{"paragraphs":["章节文字","列表文字"]}。'''
@@ -133,7 +133,7 @@ def render(paragraphs, out):
     body = ''.join(body_parts)
     page = '''<!doctype html><html lang="zh-CN"><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>群聊周报</title><style>body{margin:0;background:#eee;font-family:"Microsoft YaHei",sans-serif}
+<title>群聊分析报告</title><style>body{margin:0;background:#eee;font-family:"Microsoft YaHei",sans-serif}
 main{box-sizing:border-box;max-width:720px;margin:24px auto;padding:36px;background:white;color:#222}
 p,li{font-size:20px;line-height:1.7;overflow-wrap:anywhere}p{margin:0 0 16px}li{margin:0 0 10px}ul{padding-left:24px;margin:0 0 22px}h2{font-size:23px;margin:26px 0 12px}
 @media print{body{background:white}main{margin:0;max-width:none;padding:12px}p{break-inside:avoid}}
@@ -265,8 +265,8 @@ media_enrichment 是资料解读而非群友原话，必须标为资料作者观
         if len(json.dumps(findings, ensure_ascii=False)) > 180000:
             raise ValueError('候选发现超过汇总上限；分片已保存，需要分层汇总，不能截断后冒充整周结果。')
         instruction = analysis_prompt + '''
-将候选发现整合为适合微信快速阅读的精简周报，目标600至900字，尽量不超过1200字。
-格式为【本周看点】【关键贡献】【共识与分歧】【待解决问题】，无内容的章节省略。
+将候选发现整合为适合微信快速阅读的精简讨论报告，目标600至900字，尽量不超过1200字。
+格式为【讨论重点】【关键贡献】【共识与分歧】【待解决问题】，无内容的章节省略。
 章节内使用短列表，每个议题或问题单独一条，最多两句；先说结论，删掉长背景、逐日复盘、人名堆砌和长原文。
 优先保留3至5个重要议题，最多10个，不凑数。关键贡献最多3人，每人一句，发言量仅有必要时单列。
 时间范围一行即可；覆盖限制只有确实影响结论时用一句普通中文说明，不输出JSON字段、原始统计和技术元数据。
@@ -325,11 +325,24 @@ def main():
     parser.add_argument('--media', action='store_true', help='提取公开网页和可取得的视频，复用缓存')
     parser.add_argument('--resume-analysis', type=Path, help='复用该采集目录下已完成的分析分片，只重新汇总')
     parser.add_argument('--prompt-file', type=Path)
+    parser.add_argument('--start', help='从已有导出中选择起始日期')
+    parser.add_argument('--end', help='从已有导出中选择截止日期，含当天')
     args = parser.parse_args()
     try:
         if args.ask_key and not get_api_key():
             os.environ['GEMINI_API_KEY'] = getpass.getpass('Gemini API Key（隐藏输入，仅本次使用）：')
         prompt_text = args.prompt_file.read_text('utf-8') if args.prompt_file else None
+        if args.start or args.end:
+            from date_ranges import resolve_date_range, subset_export
+            from zoneinfo import ZoneInfo
+            start, end = resolve_date_range(args.start, args.end, datetime.now(ZoneInfo('Australia/Sydney')))
+            if args.resume_analysis:
+                meta = json.loads((args.folder / 'coverage.json').read_text('utf-8'))
+                if meta.get('start') != start.isoformat() or meta.get('end_exclusive') != end.isoformat():
+                    raise ValueError('复用分析分片时不能改变原记录日期；请改为“分析已有记录”重新分析所选时段。')
+            selected = subset_export(args.folder, start, end)
+            args.folder = selected
+            print(f'本次分析记录：{selected}', flush=True)
         print(f'分析结果：{run_analysis(args.folder, args.model, args.allow_partial, media=args.media, resume_dir=args.resume_analysis, prompt_text=prompt_text).resolve()}')
     except (ValueError, OSError, RuntimeError, sqlite3.Error) as exc:
         parser.exit(1, f'分析未完成：{exc}\n')

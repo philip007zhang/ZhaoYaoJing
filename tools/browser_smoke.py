@@ -23,7 +23,7 @@ def main():
         report = folder / 'analysis-demo'
         report.mkdir(parents=True)
         (folder / 'coverage.json').write_text(json.dumps({'group': '产品交流示例群', 'start': '2026-10-31T00:00:00+11:00',
-            'included': 1280, 'history': {'boundary_reached': True}}, ensure_ascii=False), encoding='utf-8')
+            'end_exclusive': '2026-11-07T00:00:00+11:00', 'included': 1280, 'history': {'boundary_reached': True}}, ensure_ascii=False), encoding='utf-8')
         render(['这是一份合成数据周报，用于展示界面。本周讨论主要围绕产品定位、内容表达与用户反馈展开。',
                 '成员在不同日期分享了各自的经验，并进一步讨论如何把建议转化为可执行的改进。资料作者的观点与群内共识需要分别理解。'], report)
         server = ThreadingHTTPServer(('127.0.0.1', 0), handler_for(app))
@@ -36,6 +36,9 @@ def main():
                 page.on('pageerror', lambda error: errors.append(str(error)))
                 page.goto(f'http://127.0.0.1:{server.server_port}', wait_until='networkidle')
                 page.locator('#resultText').wait_for(state='visible')
+                assert page.locator('#end').is_visible()
+                assert page.locator('#start').get_attribute('min')
+                assert page.locator('#end').get_attribute('max')
                 assert '合成数据周报' in page.locator('#resultText').inner_text()
                 page.locator('#group').fill('产品交流示例群')
                 page.locator('#prompt').fill('自定义测试提示词：只写连续段落。')

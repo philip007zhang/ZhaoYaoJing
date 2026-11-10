@@ -254,7 +254,9 @@ class WeeklyTests(unittest.TestCase):
             with patch('sys.argv', argv), patch.dict('os.environ', {'GEMINI_API_KEY': 'test-only'}), \
                     patch('weekly_chat.find_cached_week', return_value=folder), \
                     patch('weekly_chat.capture') as capture_mock, \
-                    patch('gemini_analysis.run_analysis', return_value=folder / 'analysis') as analysis_mock:
+                    patch('gemini_analysis.run_analysis', return_value=folder / 'analysis') as analysis_mock, \
+                    patch('weekly_chat.datetime') as clock:
+                clock.now.return_value = datetime(2026, 11, 10, 12, tzinfo=self.tz)
                 weekly_chat.main()
                 capture_mock.assert_not_called()
                 analysis_mock.assert_called_once_with(folder, 'gemini-4-argon')
@@ -266,7 +268,9 @@ class WeeklyTests(unittest.TestCase):
             argv = ['weekly_chat.py', '--group', TEST_GROUP, '--start', '2026-10-31',
                     '--force-collect', '--out', str(out)]
             with patch('sys.argv', argv), patch('weekly_chat.find_cached_week') as cache_mock, \
-                    patch('weekly_chat.capture', return_value=([], {'boundary_reached': True})) as capture_mock:
+                    patch('weekly_chat.capture', return_value=([], {'boundary_reached': True})) as capture_mock, \
+                    patch('weekly_chat.datetime') as clock:
+                clock.now.return_value = datetime(2026, 11, 10, 12, tzinfo=self.tz)
                 weekly_chat.main()
                 cache_mock.assert_not_called()
                 capture_mock.assert_called_once()

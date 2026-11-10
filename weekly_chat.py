@@ -11,6 +11,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 from console_output import configure_console
+from date_ranges import resolve_date_range
 
 configure_console()
 
@@ -333,9 +334,10 @@ def find_cached_week(roots, group, start, end):
 
 
 def main():
-    parser = argparse.ArgumentParser(description='群聊周报；默认最近结束的周六至周五。')
+    parser = argparse.ArgumentParser(description='群聊分析；可选择过去30天的任意日期范围，默认最近结束的一周。')
     parser.add_argument('--group', help='省略时启动询问群名')
-    parser.add_argument('--start', help='起始周六 YYYY-MM-DD')
+    parser.add_argument('--start', help='起始日期 YYYY-MM-DD，包含当天')
+    parser.add_argument('--end', help='截止日期 YYYY-MM-DD，包含当天')
     parser.add_argument('--timezone', default='Australia/Sydney')
     parser.add_argument('--input', type=Path, help='已导出的 JSON 数组（按时间从早到晚）')
     parser.add_argument('--library', choices=['wxautox4', 'wxauto4'], default='wxautox4')
@@ -368,19 +370,16 @@ def main():
             raise ValueError('batch、max-pages 和 page-timeout 必须大于零')
         tz = ZoneInfo(args.timezone)
         group = args.group or input(f'请输入群名（回车使用测试群 {TEST_GROUP}）：').strip() or TEST_GROUP
-        start, end = week(datetime.now(tz))
-        if args.start:
-            start = datetime.strptime(args.start, '%Y-%m-%d').replace(tzinfo=tz)
-            if start.weekday() != 5:
-                raise ValueError('--start 必须是周六')
-            end = start + timedelta(days=7)
+        now = datetime.now(tz)
+        start, end = resolve_date_range(args.start, args.end, now)
         print(f'群：{group}\n周期：{start.isoformat()} <= 时间 < {end.isoformat()}')
         analysis_options = {}
         if args.media:
             analysis_options['media'] = True
         if args.prompt_file:
             analysis_options['prompt_text'] = args.prompt_file.read_text('utf-8')
-        if not args.input and not args.force_collect:
+        # Today's range is still growing; don't silently reuse an earlier snapshot.
+        if not args.input and not args.force_collect and end.date() <= now.date():
             roots = [Path('outputs'), Path(__file__).resolve().parent / 'outputs']
             if args.cache_dir:
                 roots.append(args.cache_dir)

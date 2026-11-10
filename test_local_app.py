@@ -6,6 +6,8 @@ import time
 import unittest
 from http.server import ThreadingHTTPServer
 from pathlib import Path
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 from unittest.mock import patch
 from local_app import App, handler_for
 
@@ -21,7 +23,7 @@ class LocalAppTests(unittest.TestCase):
 
     def test_commands_include_prompt_media_and_cache_without_shell(self):
         prompt = Path(self.tmp.name) / 'prompt.txt'
-        cmd = self.app.command({'mode': 'scan_analyze', 'group': '测试群', 'start': '2026-10-31',
+        cmd = self.app.command({'mode': 'scan_analyze', 'group': '测试群', 'start': (datetime.now(ZoneInfo('Australia/Sydney')) - timedelta(days=3)).date().isoformat(),
                                 'media': True, 'force': True}, prompt)
         self.assertIn('--prompt-file', cmd)
         self.assertIn('--cache-dir', cmd)
@@ -39,9 +41,17 @@ class LocalAppTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.app.command({'mode': 'resume', 'run': 'run', 'resume': '../other'}, Path('p'))
 
-    def test_sunday_cannot_start_scan(self):
-        with self.assertRaisesRegex(ValueError, '周六'):
-            self.app.command({'group': '测试', 'start': '2026-11-01'}, Path('p'))
+    def test_non_saturday_range_is_accepted(self):
+        today = datetime.now(ZoneInfo('Australia/Sydney')).date()
+        sunday = today - timedelta(days=(today.weekday() - 6) % 7)
+        cmd = self.app.command({'group': '测试', 'start': sunday.isoformat(), 'end': today.isoformat()}, Path('p'))
+        self.assertIn('--end', cmd)
+        self.assertEqual(cmd[cmd.index('--end') + 1], today.isoformat())
+
+    def test_invalid_date_range_is_rejected(self):
+        today = datetime.now(ZoneInfo('Australia/Sydney')).date()
+        with self.assertRaisesRegex(ValueError, '晚于'):
+            self.app.command({'group': '测试', 'start': today.isoformat(), 'end': (today-timedelta(days=1)).isoformat()}, Path('p'))
 
     def test_single_worker_rejects_second_job(self):
         self.app.state['status'] = 'running'
