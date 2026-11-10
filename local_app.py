@@ -6,18 +6,23 @@ import secrets
 import subprocess
 import sys
 import threading
+import time
 import uuid
 import webbrowser
 from collections import deque
-from datetime import datetime
+from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 from console_output import configure_console
+from date_ranges import resolve_date_range, range_limits
+from zoneinfo import ZoneInfo
 
 configure_console()
 
 ROOT = Path(__file__).resolve().parent
+if (ROOT / '.deps').is_dir():
+    sys.path.insert(0, str(ROOT / '.deps'))
 
 
 class App:
@@ -29,6 +34,14 @@ class App:
         self.process = None
         self.state = {'status': 'idle', 'logs': [], 'exit_code': None}
         self.logs = deque(maxlen=1500)
+        self.last_progress = None
+        self.started_at = None
+
+    def snapshot(self):
+        with self.lock:
+            idle = int(time.monotonic() - self.last_progress) if self.last_progress else 0
+            return dict(self.state, logs=list(self.logs), idle_seconds=idle,
+                        stalled=self.state['status'] == 'running' and idle >= 300)
 
     def inside(self, value):
         path = (self.data / value).resolve()
@@ -46,7 +59,7 @@ class App:
                 packages = [str(p.relative_to(self.data)).replace('\\', '/') for p in
                             sorted(meta.parent.glob('analysis-*'), reverse=True) if list(p.glob('chunk-*.json'))]
                 result.append({'id': meta.parent.name, 'group': info.get('group'),
-                               'start': info.get('start'), 'included': info.get('included'),
+                               'start': info.get('start'), 'end': (datetime.fromisoformat(info['end_exclusive']) - timedelta(days=1)).date().isoformat() if info.get('end_exclusive') else None, 'included': info.get('included'),
                                'complete': bool((info.get('history') or {}).get('boundary_reached')),
                                'reports': reports, 'packages': packages})
             except (OSError, ValueError, AttributeError):
@@ -66,6 +79,13 @@ class App:
             if not (folder / 'coverage.json').is_file():
                 raise ValueError('请先选择已有采集记录')
             cmd = [sys.executable, '-X', 'utf8', str(ROOT / 'gemini_analysis.py'), str(folder)] + common
+            if body.get('start') or body.get('end'):
+                selected_start, selected_end = resolve_date_range(body.get('start'), body.get('end'), datetime.now(ZoneInfo('Australia/Sydney')))
+                if mode == 'resume':
+                    meta = json.loads((folder / 'coverage.json').read_text('utf-8'))
+                    if meta.get('start') != selected_start.isoformat() or meta.get('end_exclusive') != selected_end.isoformat():
+                        raise ValueError('复用分片需保持原日期范围；改变日期请使用“分析已有记录”。')
+                cmd.extend(['--start', selected_start.date().isoformat(), '--end', (selected_end - timedelta(days=1)).date().isoformat()])
             if body.get('partial'):
                 cmd.append('--allow-partial')
             if mode == 'resume':
@@ -79,15 +99,14 @@ class App:
         group = str(body.get('group', '')).strip()
         if not group:
             raise ValueError('请输入群名')
-        date = datetime.strptime(str(body.get('start', '')), '%Y-%m-%d')
-        if date.weekday() != 5:
-            raise ValueError('起始日期必须为周六')
+        now = datetime.now(ZoneInfo('Australia/Sydney'))
+        date, end = resolve_date_range(str(body.get('start', '')) or None, str(body.get('end', '')) or None, now)
         batch, pages, timeout = (int(body.get('batch', 100)), int(body.get('pages', 1000)), int(body.get('timeout', 120)))
         if not 1 <= batch <= 1000 or not 1 <= pages <= 10000 or not 1 <= timeout <= 600:
             raise ValueError('批量、轮数或超时超出允许范围')
         output = self.data / datetime.now().strftime('%Y%m%d-%H%M%S-%f')
         cmd = [sys.executable, '-X', 'utf8', str(ROOT / 'weekly_chat.py'), '--group', group,
-               '--start', date.strftime('%Y-%m-%d'), '--out', str(output), '--cache-dir', str(self.data),
+               '--start', date.strftime('%Y-%m-%d'), '--end', (end - timedelta(days=1)).strftime('%Y-%m-%d'), '--out', str(output), '--cache-dir', str(self.data),
                '--batch', str(batch), '--max-pages', str(pages), '--page-timeout', str(timeout)] + common
         if mode == 'scan_analyze':
             cmd.append('--analyze')
@@ -113,6 +132,7 @@ class App:
                                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                             text=True, encoding='utf-8', errors='replace', creationflags=creationflags)
             self.logs.clear()
+            self.started_at = self.last_progress = time.monotonic()
             self.state = {'status': 'running', 'exit_code': None}
             threading.Thread(target=self.consume, args=(self.process,), daemon=True).start()
 
@@ -120,6 +140,7 @@ class App:
         for line in process.stdout:
             with self.lock:
                 self.logs.append(line.rstrip())
+                self.last_progress = time.monotonic()
         code = process.wait()
         process.stdout.close()
         with self.lock:
@@ -128,9 +149,17 @@ class App:
 
     def stop(self):
         with self.lock:
-            if self.process and self.process.poll() is None:
-                self.state['status'] = 'stopping'
-                self.process.terminate()
+            process = self.process
+            if not process or process.poll() is not None:
+                return
+            self.state['status'] = 'stopping'
+        if os.name == 'nt':
+            # The venv launcher can own a second Python process. Killing only
+            # the launcher leaves UI automation alive and blocks new tasks.
+            subprocess.run(['taskkill', '/PID', str(process.pid), '/T', '/F'],
+                           capture_output=True, timeout=15, creationflags=subprocess.CREATE_NO_WINDOW)
+        else:
+            process.terminate()
 
 
 def handler_for(app):
@@ -165,12 +194,14 @@ def handler_for(app):
                     return self.send((ROOT / 'web' / parsed.path[1:]).read_text('utf-8'), mime=mime + '; charset=utf-8')
                 if parsed.path == '/api/config':
                     from gemini_analysis import PROMPT, get_api_key
-                    from weekly_chat import week, ZoneInfo
+                    now = datetime.now(ZoneInfo('Australia/Sydney'))
+                    start, end = resolve_date_range(None, None, now)
+                    lower, upper = range_limits(now)
                     return self.send({'prompt': PROMPT, 'key_configured': bool(get_api_key()),
-                                      'start': week(datetime.now(ZoneInfo('Australia/Sydney')))[0].date().isoformat()})
+                                      'start': start.date().isoformat(), 'end': (end - timedelta(days=1)).date().isoformat(),
+                                      'min_date': lower.date().isoformat(), 'max_date': upper.date().isoformat()})
                 if parsed.path == '/api/status':
-                    with app.lock:
-                        return self.send(dict(app.state, logs=list(app.logs)))
+                    return self.send(app.snapshot())
                 if parsed.path == '/api/runs':
                     return self.send(app.runs())
                 if parsed.path == '/api/result':

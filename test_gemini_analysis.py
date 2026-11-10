@@ -38,7 +38,7 @@ class AnalysisTests(unittest.TestCase):
             out = run_analysis(folder, 'gemini-4-argon', caller=fake)
             self.assertEqual(len(calls), 2)
             self.assertTrue(all('最多10个' in instruction for _, instruction in calls))
-            self.assertIn('M00000001', (out / 'wechat.txt').read_text('utf-8'))
+            self.assertNotIn('M00000001', (out / 'wechat.txt').read_text('utf-8'))
             self.assertTrue((out / 'wechat-01.txt').exists())
             self.assertTrue((out / 'wechat.html').exists())
 
@@ -86,13 +86,33 @@ class AnalysisTests(unittest.TestCase):
             self.assertTrue(all(instruction.startswith(custom) for instruction in seen))
             self.assertEqual((out / 'prompt.txt').read_text('utf-8'), custom)
 
-    def test_render_escapes_html_and_rejects_lists(self):
+    def test_render_escapes_html_and_supports_lists(self):
         with tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parent) as tmp:
             folder = Path(tmp)
             render(['原文含有<script>，应显示为普通文字。'], folder)
             self.assertIn('&lt;script&gt;', (folder / 'wechat.html').read_text('utf-8'))
-            with self.assertRaises(ValueError):
-                render(['- 这是列表'], folder)
+            render(['【待解决问题】', '- 需要核对数据（M00000001）\n- 明确时间（Message ID: M00000002）'], folder)
+            text = (folder / 'wechat.txt').read_text('utf-8')
+            self.assertNotIn('M00000001', text)
+            self.assertNotIn('Message ID', text)
+            self.assertIn('- 需要核对数据', text)
+            page = (folder / 'wechat.html').read_text('utf-8')
+            self.assertIn('<li>', page)
+            self.assertIn('<h2>', page)
+
+    def test_overlong_report_is_condensed_and_keeps_original(self):
+        with tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parent) as tmp:
+            folder = Path(tmp)
+            self.fixture(folder)
+            def fake(model, instruction, data):
+                if 'messages' in data:
+                    return {'findings': [{'text': '核对数据', 'evidence': []}]}
+                if 'paragraphs' in data:
+                    return {'paragraphs': ['【待解决问题】', '• 先核对数据，再确定处理方案。']}
+                return {'paragraphs': ['讨论内容。' * 300]}
+            out = run_analysis(folder, 'gemini-4-argon', caller=fake)
+            self.assertLess(len((out / 'wechat.txt').read_text('utf-8')), 1200)
+            self.assertTrue((out / 'analysis-before-condensing.json').exists())
 
 
 if __name__ == '__main__':

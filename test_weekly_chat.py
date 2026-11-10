@@ -3,12 +3,62 @@ import tempfile
 import unittest
 from datetime import datetime
 from pathlib import Path
-from weekly_chat import TEST_GROUP, analyze, week, write_outputs, ZoneInfo, collect_history, chronological, find_cached_week
+from weekly_chat import TEST_GROUP, analyze, week, write_outputs, ZoneInfo, collect_history, chronological, find_cached_week, parse_time, normalize_time_rows
 from types import SimpleNamespace
 from unittest.mock import patch
 
 
 class WeeklyTests(unittest.TestCase):
+    def test_weekday_labels_resolve_against_capture_day(self):
+        tz = ZoneInfo('Australia/Sydney')
+        reference = datetime(2026, 11, 10, 19, tzinfo=tz)
+        self.assertEqual(parse_time('星期六', tz, reference), datetime(2026, 11, 7, tzinfo=tz))
+        self.assertEqual(parse_time('周六 下午 3:15', tz, reference), datetime(2026, 11, 7, 15, 15, tzinfo=tz))
+        self.assertEqual(parse_time('昨天 08:30', tz, reference), datetime(2026, 11, 9, 8, 30, tzinfo=tz))
+        self.assertEqual(parse_time('前天', tz, reference).day, 8)
+        self.assertEqual(parse_time('11月7日 18:00', tz, reference).day, 7)
+        self.assertIsNone(parse_time('星期六 29:99', tz, reference))
+
+    def test_year_boundary_and_sunday_alias(self):
+        tz = ZoneInfo('Australia/Sydney')
+        reference = datetime(2027, 1, 2, 12, tzinfo=tz)
+        self.assertEqual(parse_time('12月31日', tz, reference).year, 2026)
+        self.assertEqual(parse_time('星期天', tz, reference).date().isoformat(), '2026-12-27')
+
+    def test_visible_weekday_overrides_library_date_and_preserves_label(self):
+        tz = ZoneInfo('Australia/Sydney')
+        reference = datetime(2026, 11, 10, 19, tzinfo=tz)
+        rows = normalize_time_rows([dict(type='time', content='星期六', time='2026-10-31 00:00:00')], tz, reference)
+        self.assertEqual(rows[0]['time'][:10], '2026-11-07')
+        self.assertEqual(rows[0]['time_label'], '星期六')
+        self.assertEqual(rows[0]['time_precision'], 'day')
+        self.assertEqual(rows[0]['time_original'], '2026-10-31 00:00:00')
+
+    def test_stop_at_target_saturday_without_previous_week(self):
+        tz = ZoneInfo('Australia/Sydney')
+        start = datetime(2026, 11, 7, tzinfo=tz)
+        fake = self.history([[dict(type='time', content='星期六'),
+                              dict(type='text', attr='friend', sender='示例', content='本周记录')]])
+        with tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parent) as tmp:
+            rows, state = collect_history(fake, TEST_GROUP, start, Path(tmp) / 'pages',
+                                          reference=datetime(2026, 11, 10, 19, tzinfo=tz))
+            self.assertEqual(len(fake.calls), 1)
+            self.assertTrue(state['boundary_reached'])
+            self.assertEqual(state['stop_reason'], 'reached_start')
+            self.assertEqual(state['start_boundary_precision'], 'day')
+            included, _, _, _ = analyze(rows, TEST_GROUP, start, start.replace(day=14))
+            self.assertEqual(len(included), 1)
+
+    def test_timed_saturday_keeps_reading_to_day_start(self):
+        tz = ZoneInfo('Australia/Sydney')
+        start = datetime(2026, 11, 7, tzinfo=tz)
+        fake = self.history([[dict(type='time', content='星期六 14:30')],
+                             [dict(type='time', content='星期五 23:30')]])
+        with tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parent) as tmp:
+            _, state = collect_history(fake, TEST_GROUP, start, Path(tmp) / 'pages',
+                                       reference=datetime(2026, 11, 10, 19, tzinfo=tz))
+            self.assertEqual(len(fake.calls), 2)
+            self.assertTrue(state['boundary_reached'])
     def setUp(self):
         self.tz = ZoneInfo('Australia/Sydney')
         self.start, self.end = week(datetime(2026, 11, 7, 12, tzinfo=self.tz))
@@ -155,6 +205,25 @@ class WeeklyTests(unittest.TestCase):
             write_outputs(root / 'run', rows, TEST_GROUP, self.start, self.end, 'test', state)
             self.assertIsNone(find_cached_week([root], TEST_GROUP, self.start, self.end))
 
+    def test_media_flag_never_calls_unbounded_video_download(self):
+        class Video:
+            type = 'video'
+            attr = 'friend'
+            content = '[视频]'
+            sender = '示例成员'
+            def download(self):
+                raise AssertionError('unbounded UI download must not run')
+        class Fake:
+            def ChatInfo(self):
+                return {'chat_name': TEST_GROUP, 'chat_type': 'group'}
+            def GetHistoryMessage(self, **kwargs):
+                return [SimpleNamespace(type='time', time='2026-10-30T12:00:00+11:00'), Video()]
+        with tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parent) as tmp:
+            rows, state = collect_history(Fake(), TEST_GROUP, self.start, Path(tmp) / 'pages', download_media=True)
+            video = next(r for r in rows if r.get('type') == 'video')
+            self.assertEqual(video['media_download_status'], 'deferred_unbounded_wechat_menu_download')
+            self.assertTrue((Path(tmp) / 'pages/page-0001.json').is_file())
+
     def cache_fixture(self, root, name='complete', complete=True):
         folder = root / name
         write_outputs(folder, [self.row(self.start.isoformat())], TEST_GROUP,
@@ -185,7 +254,9 @@ class WeeklyTests(unittest.TestCase):
             with patch('sys.argv', argv), patch.dict('os.environ', {'GEMINI_API_KEY': 'test-only'}), \
                     patch('weekly_chat.find_cached_week', return_value=folder), \
                     patch('weekly_chat.capture') as capture_mock, \
-                    patch('gemini_analysis.run_analysis', return_value=folder / 'analysis') as analysis_mock:
+                    patch('gemini_analysis.run_analysis', return_value=folder / 'analysis') as analysis_mock, \
+                    patch('weekly_chat.datetime') as clock:
+                clock.now.return_value = datetime(2026, 11, 10, 12, tzinfo=self.tz)
                 weekly_chat.main()
                 capture_mock.assert_not_called()
                 analysis_mock.assert_called_once_with(folder, 'gemini-4-argon')
@@ -197,7 +268,9 @@ class WeeklyTests(unittest.TestCase):
             argv = ['weekly_chat.py', '--group', TEST_GROUP, '--start', '2026-10-31',
                     '--force-collect', '--out', str(out)]
             with patch('sys.argv', argv), patch('weekly_chat.find_cached_week') as cache_mock, \
-                    patch('weekly_chat.capture', return_value=([], {'boundary_reached': True})) as capture_mock:
+                    patch('weekly_chat.capture', return_value=([], {'boundary_reached': True})) as capture_mock, \
+                    patch('weekly_chat.datetime') as clock:
+                clock.now.return_value = datetime(2026, 11, 10, 12, tzinfo=self.tz)
                 weekly_chat.main()
                 cache_mock.assert_not_called()
                 capture_mock.assert_called_once()
